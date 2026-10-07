@@ -61,6 +61,7 @@ No dependencies or package installation are required for the example.
 The diagram shows how Node.js executes synchronous JavaScript and coordinates asynchronous work using V8, the Call Stack, libuv, queues, microtasks, and the Event Loop.
 
 ## Core idea
+
 Think of Node.js as having two cooperating parts:
 
 `V8` executes JavaScript. It owns the JavaScript execution machinery, including the `Call Stack` and JavaScript objects such as Promises.
@@ -72,8 +73,11 @@ A useful simplified flow is:
 
 Microtasks such as Promise handlers get special priority at appropriate checkpoints.
 
-1. JavaScript enters V8
+### 1. JavaScript enters V8
+
 Suppose you run:
+
+```js
 console.log("Start");
 
 setTimeout(() => {
@@ -85,23 +89,35 @@ Promise.resolve().then(() => {
 });
 
 console.log("End");
+```
 
 V8 parses and compiles the JavaScript and begins executing it.
 The Call Stack keeps track of which JavaScript functions are currently executing.
 So the first operation is roughly:
+
+```text
 Call Stack
 ┌─────────────────┐
 │ console.log()   │
 │ main script     │
 └─────────────────┘
+```
 
 It prints:
+
+```text
 Start
+```
 
 Once console.log() finishes, its frame is removed from the stack.
-2. setTimeout() does not block the Call Stack
+
+### 2. setTimeout() does not block the Call Stack
+
 Next:
+
+```js
 setTimeout(callback, 0);
+```
 
 A common misunderstanding is that 0 means:
 Execute the callback immediately.
@@ -109,6 +125,8 @@ Execute the callback immediately.
 It doesn't.
 The timer is registered through Node.js's timer/event-loop machinery, which is built around libuv.
 Conceptually:
+
+```text
 V8 / Call Stack
       │
       │ register timer
@@ -118,62 +136,97 @@ Node.js / libuv
       │ timer becomes ready
       ▼
 Timers processing
+```
 
 Node.js does not sit on the Call Stack waiting for the timer.
 Execution continues.
-3. Promise creates a microtask
+
+### 3. Promise creates a microtask
+
 Now:
+
+```js
 Promise.resolve().then(() => {
   console.log("Promise");
 });
+```
 
 The Promise is already fulfilled, but its .then() handler still does not execute synchronously.
 Instead, the handler is scheduled as a microtask.
 Conceptually:
+
+```text
 Microtask Queue
 ┌──────────────────────┐
 │ Promise .then(...)   │
 └──────────────────────┘
+```
 
 This distinction is extremely important.
 Promise handlers don't go into the same place as timer callbacks.
-4. Synchronous JavaScript continues first
+
+### 4. Synchronous JavaScript continues first
+
 The program then reaches:
+
+```js
 console.log("End");
+```
 
 It executes immediately because synchronous JavaScript currently has control of the Call Stack.
 Output so far:
+
+```text
 Start
 End
+```
 
 Eventually the top-level script finishes and the stack becomes empty.
-5. Microtasks get processed
+
+### 5. Microtasks get processed
+
 At the appropriate microtask checkpoint, Node/V8 processes pending microtasks.
 Our queue contains:
+
+```text
 Microtask Queue
 ┌──────────────────────┐
 │ Promise .then(...)   │
 └──────────────────────┘
+```
 
 The Promise callback gets executed by V8:
+
+```js
 () => {
   console.log("Promise");
 }
+```
 
 So now:
+
+```text
 Start
 End
 Promise
+```
 
 An important rule is that the microtask queues are drained before Node continues on to the next relevant event-loop work.
-6. Node's special process.nextTick() queue
+
+### 6. Node's special process.nextTick() queue
+
 Node.js has another mechanism:
+
+```js
 process.nextTick(() => {
   console.log("nextTick");
 });
+```
 
 This is Node-specific and is even more urgent than the normal Promise/queueMicrotask() queue.
 A simplified priority model is:
+
+```text
 Current JavaScript
        ↓
 process.nextTick callbacks
@@ -181,11 +234,16 @@ process.nextTick callbacks
 Promise / queueMicrotask microtasks
        ↓
 continue event-loop work
+```
 
 So don't think of process.nextTick() as simply another Promise microtask.
-7. The Event Loop processes phases
+
+### 7. The Event Loop processes phases
+
 Once synchronous execution and the relevant microtasks are finished, Node can continue through its event-loop phases.
 A simplified representation is:
+
+```text
               ┌─────────────┐
               │   Timers    │
               └──────┬──────┘
@@ -210,26 +268,39 @@ A simplified representation is:
               └──────┬──────┘
                      │
                      └──→ next iteration
+```
 
 This is why saying that Node has just one generic "callback queue" is useful for beginner explanations but not completely accurate.
 Different kinds of callbacks are associated with different event-loop phases.
 For example, setTimeout() is associated with timers, while setImmediate() is associated with the check phase.
-8. The timer callback can now execute
+
+### 8. The timer callback can now execute
+
 Eventually the zero-delay timer becomes eligible to run.
 Node invokes its callback, and V8 executes that JavaScript on the Call Stack:
+
+```js
 () => {
   console.log("Timeout");
 }
+```
 
 Now the output becomes:
+
+```text
 Start
 End
 Promise
 Timeout
+```
 
 So setTimeout(..., 0) still came after the Promise handler.
-9. What happens if a callback creates another Promise?
+
+### 9. What happens if a callback creates another Promise?
+
 Suppose a timer does this:
+
+```js
 setTimeout(() => {
   console.log("Timer");
 
@@ -237,27 +308,38 @@ setTimeout(() => {
     console.log("Promise inside timer");
   });
 }, 0);
+```
 
 The timer callback executes:
+
+```text
 Call Stack
      │
      ▼
 "Timer"
+```
 
 Then it schedules a Promise reaction:
+
+```text
 Microtask Queue
 ┌─────────────────────────┐
 │ Promise inside timer    │
 └─────────────────────────┘
+```
 
 After the callback finishes, Node reaches a microtask checkpoint and processes that microtask before moving on to other event-loop callbacks.
 That's one reason microtasks can appear to "jump ahead."
-10. Where libuv fits in
+
+### 10. Where libuv fits in
+
 Another important distinction: libuv is not simply a place where every asynchronous operation runs on another thread.
 libuv provides the event loop and asynchronous I/O infrastructure.
 Depending on the operation and operating system, Node/libuv may use OS asynchronous facilities or the libuv worker thread pool.
 For example, some filesystem, DNS, crypto, and compression operations can involve the worker pool.
 A simplified model is:
+
+```text
 JavaScript
     ↓
 V8
@@ -284,10 +366,15 @@ OS async facilities     Worker pool
          Call Stack
              ↓
             V8
+```
 
 So the callback itself normally executes as JavaScript on the main JavaScript thread; the asynchronous waiting/work is what happens outside that Call Stack.
-Putting everything together
+
+## Putting everything together
+
 The more complete mental model is:
+
+```text
               JAVASCRIPT
                    │
                    ▼
@@ -334,8 +421,11 @@ The more complete mental model is:
                           │
                           ▼
                          V8
+```
 
 Meanwhile, microtasks are checked at microtask checkpoints:
+
+```text
 JavaScript callback finishes
           │
           ▼
@@ -346,10 +436,17 @@ JavaScript callback finishes
           │
           ▼
  Continue event-loop work
+```
 
 So the most important execution priority to remember is approximately:
+
+```text
 current synchronous JavaScript → process.nextTick() → Promise/queueMicrotask() microtasks → continue event-loop phases/callbacks.
+```
+
 For the original example, that's exactly why:
+
+```js
 console.log("Start");
 
 setTimeout(() => console.log("Timeout"), 0);
@@ -358,11 +455,15 @@ Promise.resolve()
   .then(() => console.log("Promise"));
 
 console.log("End");
+```
 
 produces:
+
+```text
 Start
 End
 Promise
 Timeout
+```
 
 The key interview takeaway is: V8 executes JavaScript; the Call Stack tracks current execution; Node/libuv coordinate asynchronous work; the Event Loop decides when ready callbacks can run; and microtasks receive special priority between pieces of event-loop work.
